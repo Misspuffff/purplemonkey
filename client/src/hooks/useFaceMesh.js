@@ -25,7 +25,8 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { FilesetResolver, FaceLandmarker } from '@mediapipe/tasks-vision';
+import { FaceLandmarker } from '@mediapipe/tasks-vision';
+import { getVisionFileset } from './visionFileset.js';
 
 export function useFaceMesh() {
   const landmarkerRef = useRef(null);
@@ -37,11 +38,8 @@ export function useFaceMesh() {
 
     async function init() {
       try {
-        console.log('[useFaceMesh] loading FaceLandmarker via Tasks Vision API…');
 
-        const vision = await FilesetResolver.forVisionTasks(
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm',
-        );
+        const vision = await getVisionFileset();
 
         const landmarker = await FaceLandmarker.createFromOptions(vision, {
           baseOptions: {
@@ -62,7 +60,6 @@ export function useFaceMesh() {
 
         landmarkerRef.current = landmarker;
         setIsReady(true);
-        console.log('[useFaceMesh] FaceLandmarker ready');
       } catch (err) {
         console.error('[useFaceMesh] init error:', err);
       }
