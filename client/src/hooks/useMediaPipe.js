@@ -1,72 +1,78 @@
-import { useEffect, useRef, useState } from 'react';
-import { Hands } from '@mediapipe/hands';
-import { Camera } from '@mediapipe/camera_utils';
-
 /**
  * useMediaPipe
  *
- * Initialises a MediaPipe Hands instance, feeds every camera frame through
- * inference, and keeps the latest landmarks in state.
+ * Initialises a MediaPipe HandLandmarker (Tasks Vision API) once, async.
+ * Uses the same WASM runtime as useFaceMesh — no WASM conflict.
+ * Does NOT drive its own camera loop; exposes detectHands() to be called
+ * manually each RAF frame by the caller.
  *
- * @param {React.RefObject<HTMLVideoElement>} videoRef  – live webcam feed
- * @returns {{ landmarks: Array<Array<{x,y,z}>> }}
- *   landmarks – one entry per detected hand; each entry is an array of 21
- *               normalised landmark points ({ x, y, z }).
+ * @returns {{ detectHands: (videoElement, timestampMs) => Array<Array<{x,y,z}>>, isReady: boolean }}
+ *   detectHands returns one entry per detected hand (up to 2), each an array
+ *   of 21 normalised landmark points ({ x, y, z }). Returns [] when no hands
+ *   are visible or the landmarker is not yet ready.
  */
-export function useMediaPipe(videoRef) {
-  const [landmarks, setLandmarks] = useState([]);
-  const handsRef = useRef(null);
-  const cameraRef = useRef(null);
 
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { HandLandmarker } from '@mediapipe/tasks-vision';
+import { getVisionFileset } from './visionFileset.js';
+
+export function useMediaPipe() {
+  const landmarkerRef = useRef(null);
+  const [isReady, setIsReady] = useState(false);
+
+  // ── Initialise once on mount ───────────────────────────────────────────────
   useEffect(() => {
-    if (!videoRef?.current) return;
+    let cancelled = false;
 
-    // ── 1. Initialise MediaPipe Hands ─────────────────────────────────────
-    const hands = new Hands({
-      locateFile: (file) =>
-        `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`,
-    });
+    async function init() {
+      try {
 
-    hands.setOptions({
-      maxNumHands: 2,
-      modelComplexity: 1,   // 0 = lite, 1 = full
-      minDetectionConfidence: 0.7,
-      minTrackingConfidence: 0.5,
-    });
+        const vision = await getVisionFileset();
 
-    hands.onResults((results) => {
-      // results.multiHandLandmarks is an array (one entry per hand) of arrays
-      // of 21 {x, y, z} objects, or undefined when no hands are visible.
-      setLandmarks(results.multiHandLandmarks ?? []);
-    });
+        const landmarker = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+            delegate: 'GPU',
+          },
+          runningMode: 'VIDEO',
+          numHands: 2,
+          minHandDetectionConfidence: 0.7,
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
 
-    handsRef.current = hands;
-
-    // ── 2. Drive inference with @mediapipe/camera_utils ───────────────────
-    // Camera calls hands.send() on every animation frame automatically.
-    const camera = new Camera(videoRef.current, {
-      onFrame: async () => {
-        if (handsRef.current && videoRef.current) {
-          await handsRef.current.send({ image: videoRef.current });
+        if (cancelled) {
+          landmarker.close();
+          return;
         }
-      },
-      // Mirror the resolution from useCamera for consistency.
-      width: 1280,
-      height: 720,
-    });
 
-    camera.start().catch((err) => {
-      console.error('[useMediaPipe] Camera start error:', err);
-    });
+        landmarkerRef.current = landmarker;
+        setIsReady(true);
+      } catch (err) {
+        console.error('[useMediaPipe] init error:', err);
+      }
+    }
 
-    cameraRef.current = camera;
+    init();
 
     return () => {
-      // Tear down on unmount.
-      cameraRef.current?.stop();
-      handsRef.current?.close();
+      cancelled = true;
+      landmarkerRef.current?.close();
+      landmarkerRef.current = null;
     };
-  }, [videoRef]);
+  }, []);
 
-  return { landmarks };
+  // ── Per-frame detection — called manually in the RAF loop ─────────────────
+  const detectHands = useCallback((videoElement, timestampMs) => {
+    if (!landmarkerRef.current || !videoElement) return [];
+    if (videoElement.readyState < 2 || videoElement.videoWidth === 0) return [];
+
+    const result = landmarkerRef.current.detectForVideo(videoElement, timestampMs);
+    // result.landmarks: NormalizedLandmark[][] — same {x,y,z} shape as the old
+    // @mediapipe/hands results.multiHandLandmarks, so downstream code is unchanged.
+    return result.landmarks ?? [];
+  }, []);
+
+  return { detectHands, isReady };
 }

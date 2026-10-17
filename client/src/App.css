@@ -1,47 +1,144 @@
-#root {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  min-height: 100vh;
-  background: #0a0a0a;
-  padding: 0;
-  margin: 0;
-}
+/* ── Stage ─────────────────────────────────────────────────────────────── */
 
 .app {
-  position: relative;
+  position: fixed;
+  inset: 0;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #000;
+}
+
+.stage__canvas {
   width: 100%;
+  height: 100%;
+  object-fit: cover;          /* canvas is a replaced element — fills the stage */
+  display: block;
 }
 
-.camera-canvas {
-  max-width: 100%;
-  border-radius: 8px;
-  box-shadow: 0 0 32px rgba(0, 255, 136, 0.15);
-}
+/* ── Start screen ──────────────────────────────────────────────────────── */
 
-.start-btn {
+.start {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  padding: 1rem 2.5rem;
-  font-size: 1.25rem;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: #fff;
-  background: rgba(0, 0, 0, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  border-radius: 6px;
-  cursor: pointer;
-  backdrop-filter: blur(6px);
-  transition: background 0.2s, border-color 0.2s;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: radial-gradient(ellipse at 50% 40%, rgba(0, 255, 136, 0.08), transparent 60%),
+              rgba(5, 5, 8, 0.55);
+  backdrop-filter: blur(10px);
+  overflow-y: auto;
 }
 
-.start-btn:hover {
-  background: rgba(0, 255, 136, 0.15);
-  border-color: rgba(0, 255, 136, 0.6);
+.start__panel {
+  width: min(560px, 100%);
+  animation: rise 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
+
+.start__title {
+  margin: 0;
+  font-size: clamp(64px, 14vw, 112px);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 0.9;
+}
+.start__title span {
+  color: var(--primary);
+  text-shadow: 0 0 32px rgba(0, 255, 136, 0.6);
+}
+
+.start__lede {
+  margin: 16px 0 28px;
+  font-size: 18px;
+  color: var(--muted);
+  max-width: 44ch;
+}
+
+.start__guide {
+  list-style: none;
+  margin: 0 0 28px;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.start__guide li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--faint);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  animation: rise 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.start__guide li:nth-child(2) { animation-delay: 0.08s; }
+.start__guide li:nth-child(3) { animation-delay: 0.16s; }
+.start__guide strong { font-weight: 600; }
+.start__guide em { font-style: normal; color: var(--primary); }
+.start__guide span { grid-column: 1 / -1; color: var(--muted); font-size: 14px; }
+
+.start__btn {
+  width: 100%;
+  padding: 16px;
+  border: 1px solid rgba(0, 255, 136, 0.6);
+  border-radius: 10px;
+  background: rgba(0, 255, 136, 0.12);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  transition: background 0.2s, box-shadow 0.2s, transform 0.1s;
+}
+.start__btn:hover:not(:disabled) {
+  background: rgba(0, 255, 136, 0.22);
+  box-shadow: 0 0 40px rgba(0, 255, 136, 0.25);
+}
+.start__btn:active:not(:disabled) { transform: scale(0.99); }
+.start__btn:disabled { opacity: 0.4; border-color: var(--faint); background: transparent; }
+
+.start__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+.start__status.is-error { color: var(--err); }
+
+.start__keys {
+  margin: 20px 0 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: rgba(242, 242, 245, 0.4);
+}
+
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dot--ok   { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.dot--err  { background: var(--err); }
+.dot--wait { background: var(--muted); animation: pulse 1.2s ease-in-out infinite; }
+
+/* Three-dot "thinking" indicator */
+.thinking {
+  display: inline-block;
+  width: 22px;
+  height: 6px;
+  margin-left: 6px;
+  vertical-align: middle;
+  background:
+    radial-gradient(circle, currentColor 2px, transparent 2.5px) 0 50% / 8px 6px repeat-x;
+  animation: think 0.9s steps(3) infinite;
+}
+
+@keyframes rise  { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes pulse { 50% { opacity: 0.3; } }
+@keyframes think { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 -10% 0 0); } }
+

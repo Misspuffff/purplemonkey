@@ -10,8 +10,10 @@
     "start": "NODE_ENV=production node server/index.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
     "concurrently": "^9.1.0",
     "express": "^4.19.2",
-    "http-proxy-middleware": "^3.0.3"
+    "http-proxy-middleware": "^3.0.3",
+    "zod": "^4.6.7"
   }
 }

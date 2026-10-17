@@ -3,64 +3,68 @@
  *
  * Face-driven granular synthesizer built on Tone.GrainPlayer.
  * Loaded with /samples/ambientwub.wav, routed:
- *   GrainPlayer → Reverb → Filter(highshelf) → Destination
+ *   GrainPlayer → Reverb → Lowpass → Highshelf → masterBus
  *
- * Call update(expressions, headPose) every RAF frame with values from useFaceMesh.
+ * Two layers of control
+ * ─────────────────────
+ *   applyScene(drone)   — the Scene sets the *base* character (pitch, brightness,
+ *                         space, density, how much head motion matters).
+ *   update(face, pose)  — every RAF frame, the face plays *within* that character.
  *
  * Smoothing notes
  * ───────────────
- * Tone Signals (filter.frequency, filter.gain, reverb.wet) use .rampTo(value, 0.1)
- * for zipper-free transitions.  GrainPlayer properties (grainSize, overlap, detune,
- * playbackRate) are plain numbers in Tone.js v15 — they use per-frame EMA smoothing
- * (alpha ≈ 0.15, ~0.1 s time-constant at 60 fps) instead.
+ * Every parameter — Tone Signals (filter frequency/gain, reverb wet) and the
+ * GrainPlayer's plain-number properties — uses per-frame EMA smoothing
+ * (alpha ≈ 0.15, ~0.1 s time-constant at 60 fps) and is then written directly.
+ * Scheduling a fresh .rampTo() every frame piles up overlapping automation
+ * events; if the audio clock stalls (background tab) Tone interpolates between
+ * events at the same instant and throws on NaN.
  *
- * Parameter mappings
+ * Parameter mappings  (scene values in brackets)
  * ──────────────────
- *   jawOpen (0–1)      → grainSize  0.05–2.0 s
- *                      → filter.frequency  80–12000 hz
- *   browInnerUp (0–1)  → reverb.wet  0.0–1.0
- *                      → detune base  0–700 cents
- *   eyesClosed (0–1)   → overlap  0.05–0.95
- *                      → reverb.decay  0.3–12 s  (throttled, not a Signal)
- *   mouthSmile (0–1)   → filter.gain (highshelf)  0–24 dB
- *   headYaw (-1–1)     → playbackRate  0.5–2.0
- *   headPitch (-1–1)   → detune offset  -400–+400 cents  (additive with browInnerUp)
+ *   jawOpen       → grainSize 0.05–2.0 s, lowpass opens from [brightness] floor to 18 kHz
+ *   browInnerUp   → reverb wet from [space] floor to 1.0, detune +0–700 cents
+ *   eyesClosed    → overlap from [density] floor to 0.95, reverb decay 0.3–12 s
+ *   mouthSmile    → highshelf shimmer, added on top of [brightness] tilt
+ *   headYaw       → playbackRate 2^(yaw × [motion])
+ *   headPitch     → detune ±400 cents × [motion]
+ *   [pitch]       → base transposition in semitones
  */
 
 import * as Tone from 'tone';
+import { masterBus } from './masterBus.js';
+import { DEFAULT_SCENE } from '../scene/presets.js';
 
 const lerp  = (a, b, t) => a + (b - a) * t;
-const RAMP  = 0.1;   // seconds — for Tone Signal rampTo calls
 const ALPHA = 0.15;  // EMA coefficient for plain-number properties (~0.1 s at 60 fps)
 
 export class GranularEngine {
   #player         = null;
   #reverb         = null;
-  #filter         = null;
+  #lowpass        = null;
+  #shelf          = null;
   #running        = false;
   #loaded         = false;
   #startRequested = false;
+  #drone          = DEFAULT_SCENE.drone;
 
   // Reverb.decay is not a Tone Signal — throttle IR rebuilds to ~once / 2 s
   #frameCount = 0;
   #lastDecay  = -1;
 
   // Current smoothed values for GrainPlayer plain-number properties
-  #smooth = { grainSize: 0.1, overlap: 0.1, detune: 0, playbackRate: 1 };
+  #smooth = { grainSize: 0.1, overlap: 0.1, detune: 0, playbackRate: 1, cutoff: 2000, wet: 0.1, shelf: 0 };
 
   constructor() {
     // ── Signal chain (built back-to-front for easy connect()) ─────────────
-    this.#filter = new Tone.Filter({
-      type:      'highshelf',
-      frequency: 200,
-      gain:      0,
-    }).toDestination();
+    this.#shelf   = new Tone.Filter({ type: 'highshelf', frequency: 3000, gain: 0 }).connect(masterBus);
+    this.#lowpass = new Tone.Filter({ type: 'lowpass', frequency: 2000, Q: 0.7 }).connect(this.#shelf);
 
     this.#reverb = new Tone.Reverb({
       decay:    0.5,
       wet:      0.1,
       preDelay: 0.01,
-    }).connect(this.#filter);
+    }).connect(this.#lowpass);
 
     this.#player = new Tone.GrainPlayer({
       url:          '/samples/ambientwub.wav',
@@ -71,7 +75,6 @@ export class GranularEngine {
       playbackRate: 1,
       onload: () => {
         this.#loaded = true;
-        console.log('[GranularEngine] buffer loaded');
         if (this.#startRequested) this.#doStart();
       },
       onerror: (err) => console.error('[GranularEngine] buffer error:', err),
@@ -83,32 +86,30 @@ export class GranularEngine {
   #doStart() {
     this.#player.start();
     this.#running = true;
-    console.log('[GranularEngine] started');
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
 
   start() {
-    if (Tone.context.state !== 'running') {
+    if (Tone.getContext().state !== 'running') {
       console.warn('[GranularEngine] start() called but AudioContext not running');
       return;
     }
     if (this.#running) return;
 
-    if (this.#loaded) {
-      this.#doStart();
-    } else {
-      // Buffer still loading — defer until onload fires
-      this.#startRequested = true;
-      console.log('[GranularEngine] start() deferred until buffer loads');
-    }
+    if (this.#loaded) this.#doStart();
+    else this.#startRequested = true; // buffer still loading — defer until onload
   }
 
   stop() {
     if (!this.#running) return;
     this.#player.stop();
     this.#running = false;
-    console.log('[GranularEngine] stopped');
+  }
+
+  /** Set the drone's base character from a Scene. Face control continues on top. */
+  applyScene(drone) {
+    this.#drone = drone;
   }
 
   /**
@@ -119,7 +120,7 @@ export class GranularEngine {
    * @param {{ yaw, pitch, roll } | null} headPose
    */
   update(expressions, headPose) {
-    if (Tone.context.state !== 'running' || !this.#running) return;
+    if (Tone.getContext().state !== 'running' || !this.#running) return;
 
     const jawOpen     = expressions?.jawOpen     ?? 0;
     const browInnerUp = expressions?.browInnerUp ?? 0;
@@ -127,36 +128,43 @@ export class GranularEngine {
     const mouthSmile  = expressions?.mouthSmile  ?? 0;
     const yaw         = headPose?.yaw            ?? 0;
     const pitch       = headPose?.pitch          ?? 0;
+    const d           = this.#drone;
+    const s           = this.#smooth;
 
-    // ── jawOpen → grainSize (EMA) + filter cutoff (Signal) ───────────────
-    const s = this.#smooth;
-    s.grainSize        += (lerp(0.05, 2.0, jawOpen) - s.grainSize) * ALPHA;
+    // ── jawOpen → grainSize (EMA) + lowpass opening (Signal) ─────────────
+    s.grainSize           += (lerp(0.05, 2.0, jawOpen) - s.grainSize) * ALPHA;
     this.#player.grainSize = s.grainSize;
-    this.#filter.frequency.rampTo(lerp(80, 12000, jawOpen), RAMP);
+    const cutoffFloor      = lerp(250, 3500, d.brightness);
+    s.cutoff              += (cutoffFloor * Math.pow(18000 / cutoffFloor, jawOpen) - s.cutoff) * ALPHA;
+    this.#lowpass.frequency.value = s.cutoff;
 
-    // ── browInnerUp → reverb wet (Signal) + detune base (EMA) ────────────
-    this.#reverb.wet.rampTo(lerp(0.0, 1.0, browInnerUp), RAMP);
-    const detuneTarget   = lerp(0, 700, browInnerUp) + lerp(-400, 400, (pitch + 1) / 2);
+    // ── browInnerUp → reverb wet (Signal) + detune (EMA) ─────────────────
+    s.wet                 += (lerp(d.space * 0.7, 1.0, browInnerUp) - s.wet) * ALPHA;
+    this.#reverb.wet.value = s.wet;
+    const detuneTarget = d.pitch * 100
+      + lerp(0, 700, browInnerUp)
+      + lerp(-400, 400, (pitch + 1) / 2) * d.motion;
     s.detune            += (detuneTarget - s.detune) * ALPHA;
     this.#player.detune  = s.detune;
 
     // ── eyesClosed → overlap (EMA) + reverb decay (throttled) ────────────
-    s.overlap            += (lerp(0.05, 0.95, eyesClosed) - s.overlap) * ALPHA;
+    s.overlap            += (lerp(lerp(0.05, 0.6, d.density), 0.95, eyesClosed) - s.overlap) * ALPHA;
     this.#player.overlap  = s.overlap;
 
     this.#frameCount++;
-    const targetDecay = lerp(0.3, 12, eyesClosed);
+    const targetDecay = lerp(0.3 + d.space * 3, 12, eyesClosed);
     if (this.#frameCount % 60 === 0 && Math.abs(targetDecay - this.#lastDecay) > 0.3) {
       this.#reverb.decay = targetDecay;
       this.#reverb.generate().catch(() => {});
       this.#lastDecay = targetDecay;
     }
 
-    // ── mouthSmile → highshelf gain (Signal) ──────────────────────────────
-    this.#filter.gain.rampTo(lerp(0, 24, mouthSmile), RAMP);
+    // ── brightness tilt + mouthSmile shimmer → highshelf gain (Signal) ───
+    s.shelf               += (lerp(-9, 6, d.brightness) + lerp(0, 18, mouthSmile) - s.shelf) * ALPHA;
+    this.#shelf.gain.value = s.shelf;
 
-    // ── headYaw → playbackRate (EMA) ─────────────────────────────────────
-    s.playbackRate            += (lerp(0.5, 2.0, (yaw + 1) / 2) - s.playbackRate) * ALPHA;
+    // ── headYaw → playbackRate (EMA), centred on 1× ──────────────────────
+    s.playbackRate            += (Math.pow(2, yaw * d.motion) - s.playbackRate) * ALPHA;
     this.#player.playbackRate  = s.playbackRate;
   }
 
@@ -164,10 +172,8 @@ export class GranularEngine {
     this.stop();
     this.#player?.dispose();
     this.#reverb?.dispose();
-    this.#filter?.dispose();
-    this.#player = null;
-    this.#reverb = null;
-    this.#filter = null;
-    console.log('[GranularEngine] disposed');
+    this.#lowpass?.dispose();
+    this.#shelf?.dispose();
+    this.#player = this.#reverb = this.#lowpass = this.#shelf = null;
   }
 }
